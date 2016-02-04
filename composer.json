@@ -1,0 +1,23 @@
+{
+    "name": "govtnz/aacustomelements",
+    "description": "Custom HTML elements",
+    "license": "MIT",
+    "type": "silverstripe-module",
+    "keywords": ["silverstripe", "custom", "elements"],
+    "authors": [
+        {
+            "name": "Mark Stephens",
+            "email": "mark.stephens@dia.govt.nz"
+        },
+        {
+            "name": "Julian Thomson",
+            "email": "julian.thomson@dia.govt.nz"
+        }
+    ],
+    "require": {
+        "silverstripe/framework": ">=3.2.0"
+    },
+    "extra": {
+        "installer-name": "aacustomelements"
+    }
+}
