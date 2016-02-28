@@ -16,7 +16,8 @@ class CustomElementsParserTest extends SapphireTest {
 	}
 
 	public function testCustomElement() {
-		CustomElementsParser::register_custom_element('testelement', new CustomElementsParserTest_Handler());
+		CustomElementsParser::register_custom_element('testelement', new CustomElementsParserTestElement_Handler());
+		CustomElementsParser::register_custom_element('testparent', new CustomElementsParserTestParent_Handler());
 
 		// Check no substitution case, with <p> tags
 		$this->assertEquals(
@@ -43,14 +44,25 @@ class CustomElementsParserTest extends SapphireTest {
 
 	}
 
+	public function testNestedElement() {
+		$this->assertEquals(
+			'<div class="parent">hello, fred</div>',
+			$this->parser->parse('<testparent>hello, <testelement data-attr="fred">def</testelement></testparent>')
+		);
+	}
+
 	public function testCustomElementByClass() {
-		CustomElementsParser::register_custom_element_by_class('test-element', new CustomElementsParserTest_Handler());
+		CustomElementsParser::register_custom_element_by_class('test-element', new CustomElementsParserTestElement_Handler());
+		CustomElementsParser::register_custom_element_by_class('test-parent', new CustomElementsParserTestParent_Handler());
 	}
 }
 
-class CustomElementsParserTest_Handler implements CustomElementHandler {
-	public function renderCustomElement(DOMNode $node, $parser) {
+class CustomElementsParserTestElement_Handler implements CustomElementHandler {
+	public function renderCustomElement(DOMNode $node, $parser, $context = NULL) {
 		$mode = $node->getAttribute('data-test-mode');
+		if (!$mode) {
+			$mode = 'attribute';
+		}
 
 		switch ($mode) {
 			case 'attribute':
@@ -73,3 +85,21 @@ class CustomElementsParserTest_Handler implements CustomElementHandler {
 	}
 }
 
+// The handler for <test-parent>. This simple aggregates the containing text, substitutes any DOM elements in the children,
+// and returns that in a div.
+class CustomElementsParserTestParent_Handler implements CustomElementHandler {
+	public function renderCustomElement(DOMNode $node, $parser, $context = NULL) {
+		$result = $node->ownerDocument->createDocumentFragment();
+		$result->appendXML('<div class="parent"></div>');
+		$container = $result->childNodes[0];
+
+		// re-parent node's children to $result
+		while ($node->childNodes->length > 0) {
+			$container->appendChild($node->childNodes->item(0));
+		}
+
+		CustomElementsParser::reduce_in_children($result, $parser, $context);
+
+		return $result;
+	}
+}

@@ -12,5 +12,5 @@ interface CustomElementHandler {
 	// @todo figure out an efficient way to "transclude" $node's children, especially given that
 	// @todo we need to apply the same substitution rules to it. Shortcodes can be ignored at this
 	// @todo point, as that is done after it's translated back to HTML.
-	public function renderCustomElement(DOMNode $node, $parser);
+	public function renderCustomElement(DOMNode $node, $parser, $context = null);
 }

@@ -6,8 +6,11 @@
  **/
 class CustomElementsParser extends ShortcodeParser {
 
-	// Cusstom element definitions.
+	// Custom element definitions.
 	protected static $custom_elements = array();
+
+// refactor into $custom_elements, but we need to index it by element for speed.
+protected static $custom_elements_map = array();
 
 	// Register a custom element handler by element name,
 	public static function register_custom_element($elementName, CustomElementHandler $handler) {
@@ -15,6 +18,7 @@ class CustomElementsParser extends ShortcodeParser {
 			'elementName' => $elementName,
 			'handler' => $handler
 		);
+		self::$custom_elements_map[$elementName] = $handler;
 	}
 
 	// Register a custom element handler by class.
@@ -28,15 +32,31 @@ class CustomElementsParser extends ShortcodeParser {
 	// Parse shortcodes in the content. This first handles substitution of any custom elements,
 	// and then delegates to the default parsing method to handle short codes.
 	public function parse($content) {
+		$context = $this->getContext();
+
 		// Replace custom elements
-		$content = $this->substituteCustomElements($content);
+		$content = $this->substituteCustomElements($content, $context);
 
 		// Delegate to parent to handle shortcodes proper.
 		return parent::parse($content);
 	}
 
-	// look for custom elements, and substitute them.
-	protected function substituteCustomElements($content) {
+	// Attempt to identify the context. Unfortunately the context we are rendering into is not
+	// passed into the shortcode parser. So we guess based on the current controller. Most typically
+	// this is a ContentController for a page, where data() will give us the page. If not, we return
+	// null.
+	protected function getContext() {
+		$c = Controller::curr();
+		if ($c instanceof ContentController) {
+			return $c->data();
+		}
+
+		return null;
+	}
+
+	// look for custom elements, and substitute them. The approach is to parse the markup into a DOM
+	// structure, perform a depth first substitution, and then convert the DOM structure back to HTML.
+	protected function substituteCustomElements($content, $context) {
 		// disable emission of warnings on invalid markup. We're making a couple of assumptions here:
 		// 1. if you really care about invalid markup in HTML fields, you'll validate them first.
 		// 2. the CMS user is checking that the result on the front end actually matches what they
@@ -49,45 +69,51 @@ class CustomElementsParser extends ShortcodeParser {
 		$doc = new DOMDocument();
 		$doc->loadHTML('<?xml encoding="UTF-8">' . $content);
 
-		foreach (self::$custom_elements as $custom) {
-			// Determine what the list of elements is for this custom elements definition. We either
-			// look up elements by element name, or by class.
-			if (isset($custom['elementName']) && $custom['elementName']) {
-				$elements = $doc->getElementsByTagName($custom['elementName']);
-			} else {
-				$xq = new DOMXPath($doc);
-				$elements = $xq->query("//*[@class='" . $custom['elementClass'] . "']");
-			}
+		self::substitute_custom_element($doc, $this, $context);
 
-			// Process the elements until there aren't any more. Note that because we're replacing
-			// children, the elements collection gets smaller as as process the list.
-			while ($elements->length > 0) {
-				$node = $elements->item(0);
+		// foreach (self::$custom_elements as $custom) {
+		// 	// Determine what the list of elements is for this custom elements definition. We either
+		// 	// look up elements by element name, or by class.
+		// 	if (isset($custom['elementName']) && $custom['elementName']) {
+		// 		$elements = $doc->getElementsByTagName($custom['elementName']);
+		// 	} else {
+		// 		$xq = new DOMXPath($doc);
+		// 		$elements = $xq->query("//*[@class='" . $custom['elementClass'] . "']");
+		// 	}
 
-				$handler = $custom['handler'];
+		// 	// Process the elements until there aren't any more. Note that because we're replacing
+		// 	// children, the elements collection gets smaller as as process the list.
+		// 	while ($elements->length > 0) {
+		// 		$node = $elements->item(0);
 
-				// Get the handler to render the custom element.
-				$result = $handler->renderCustomElement($node, $this);
+		// 		$handler = $custom['handler'];
 
-				// $markup = $this->getFragment($node);
+		// 		// Get the handler to render the custom element.
+		// 		$result = $handler->renderCustomElement($node, $this);
 
-				if ($result !== FALSE) {
-					// we got something to replace $node with.
+		// 		// $markup = $this->getFragment($node);
 
-					if (is_string($result)) {
-						// We got markup back, so parse that into the document, and replace the custom
-						// element in the original doc with the new parsed fragment.
-						$markup = $result;
-						$result = $doc->createDocumentFragment();
-						$result->appendXML($markup);
-					}					
+		// 		if ($result !== FALSE) {
+		// 			// we got something to replace $node with.
 
-					// At this point, $result is a DOMNode to replace $node, so now do the replacement.
-					$parent = $node->parentNode;
-					$parent->replaceChild($result, $node);
-				}
-			}
-		}
+		// 			if (is_string($result)) {
+		// 				// We got markup back, so parse that into the document, and replace the custom
+		// 				// element in the original doc with the new parsed fragment.
+		// 				$markup = $result;
+		// 				$result = $doc->createDocumentFragment();
+		// 				$result->appendXML($markup);
+		// 			} else if ($result instanceof HTMLText) {
+		// 				$markup = $result->forTemplate();
+		// 				$result = $doc->createDocumentFragment();
+		// 				$result->appendXML($markup);
+		// 			}
+
+		// 			// At this point, $result is a DOMNode to replace $node, so now do the replacement.
+		// 			$parent = $node->parentNode;
+		// 			$parent->replaceChild($result, $node);
+		// 		}
+		// 	}
+		// }
 
 		libxml_use_internal_errors($internal_errors);
 
@@ -96,6 +122,62 @@ class CustomElementsParser extends ShortcodeParser {
 		$result = $this->correctMarkup($result, $content);
 
 		return $result;
+	}
+
+	// Substitute for custom elements at $node. If $node itself is a custom element, 
+	// the handler is called, and $node is replaced with it's result. If not a custom
+	// element, this calls reduce_in_children on $node. This is called by the parser
+	// at the top level on the document, but individual handlers can also call this on their
+	// child DOM notes.
+	// There are two patterns:
+	// - the custom element handler will replace it's DOM node with a substitute DOM sub-tree,
+	//   and calls this function on the sub-tree. This is the preferred approach, and allows
+	//   the expected nesting of elements.
+	// - the custom element handled doesn't call this on the replacement. There may be cases
+	//   where this makes sense, but it is not the general form.
+	public static function substitute_custom_element($node, $parser, $context) {
+		if (isset(self::$custom_elements_map[$node->nodeName])) {
+			// Debug::show("substituting " . print_r($node, true));
+			$handler = self::$custom_elements_map[$node->nodeName];
+
+			// Get the handler to render the custom element.
+			$result = $handler->renderCustomElement($node, $parser, $context);
+
+			// $markup = $this->getFragment($node);
+
+			if ($result !== FALSE) {
+				// we got something to replace $node with.
+
+				if (is_string($result)) {
+					// We got markup back, so parse that into the document, and replace the custom
+					// element in the original doc with the new parsed fragment.
+					$markup = $result;
+					$result = $node->ownerDocument->createDocumentFragment();
+					$result->appendXML($markup);
+				} else if ($result instanceof HTMLText) {
+					$markup = $result->forTemplate();
+					$result = $node->ownerDocument->createDocumentFragment();
+					$result->appendXML($markup);
+				}
+
+				// At this point, $result is a DOMNode to replace $node, so now do the replacement.
+				$parent = $node->parentNode;
+				$parent->replaceChild($result, $node);
+			}
+		} else {
+			self::reduce_in_children($node, $parser, $context);
+		}
+	}
+
+	// Invoke substitute_custom_element on all children of node. The result is that
+	// the $node sub-tree may have custom elements collapsed. It does not reduce the whole
+	// tree, just custom elements.
+	public static function reduce_in_children($node, $parser, $context) {
+		if ($node->childNodes) {
+			foreach ($node->childNodes as $child) {
+				self::substitute_custom_element($child, $parser, $context);
+			}
+		}
 	}
 
 	// protected function substituteCustomElementsInNode($node) {
